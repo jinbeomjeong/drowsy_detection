@@ -5,11 +5,9 @@ import pandas as pd
 import torchvision.models as models
 import torchvision.transforms as transforms
 
-from PIL import Image
 from models.experimental import attempt_load
 from utils.augmentations import letterbox
 from utils.general import check_img_size, non_max_suppression, scale_coords 
-from utils.plots import Annotator, colors
 from utils.accessory_lib import system_info
 from PIPNet.networks import Pip_resnet101
 from PIPNet.functions import forward_pip, get_meanface
@@ -44,9 +42,9 @@ num_nb = 10
 data_name = 'data_300W'
 experiment_name = 'pip_32_16_60_r101_l2_l1_10_1_nb10'
 num_lms = 68
-face_landmark_input_size = 256
+face_landmark_input_size = 240
 det_box_scale = 1.2
-eye_det = 0.15
+eye_det = 0.12
 
 img_size = 640
 CONF_THRES = 0.4
@@ -58,13 +56,11 @@ torch.backends.cuda.matmul.allow_tf32 = False
 elapsed_time: float = 0.0
 fps: float = 0.0
 ref_frame: int = 0
+det_frame: int = 0
 prev_time = time.time()
 start_time = time.time()
 
 device = torch.device("cuda")
-
-# transformations = transforms.Compose([transforms.Resize(448), transforms.ToTensor(),
-#                                       transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
 meanface_indices, reverse_index1, reverse_index2, max_len = get_meanface(os.path.join('PIPNet', 'data', data_name,
                                                                                       'meanface.txt'), num_nb)
@@ -127,13 +123,13 @@ cv2.namedWindow(winname='video', flags=cv2.WINDOW_NORMAL)
 
 @torch.no_grad()
 def main():
-    global elapsed_time, fps, ref_frame, prev_time
+    global elapsed_time, fps, ref_frame, det_frame, prev_time
 
     while video.isOpened():
         ret, img0 = video.read()
 
         if ret:
-            ref_frame = ref_frame + 1
+            ref_frame += 1
 
             # Padded resize
             img = letterbox(img0, img_size_chk, stride=stride)[0]
@@ -151,23 +147,15 @@ def main():
             pred = model(img, augment=False)[0]
 
             # Apply NMS
-            pred = non_max_suppression(pred, CONF_THRES, IOU_THRES, classes=None, agnostic=False)
+            detected_face = non_max_suppression(pred, CONF_THRES, IOU_THRES, classes=None, agnostic=False)[0]
 
             # Process detections
-            det = pred[0]
-            s = ''
-            s += '%gx%g ' % img.shape[2:]  # print string
-            annotator = Annotator(img0, line_width=1, example=str(names))
-
-            if len(det):
+            if len(detected_face):
                 # Rescale boxes from img_size to img0 size
-                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], img0.shape).round()
+                detected_face[:, :4] = scale_coords(img.shape[2:], detected_face[:, :4], img0.shape).round()
 
                 # Write results
-                for *xyxy, conf, cls in reversed(det):
-                    label = f'{names[int(cls)]} {conf:.2f}'
-                    annotator.box_label(xyxy, label, color=colors(int(cls)))
-
+                for *xyxy, conf, cls in reversed(detected_face):
                     det_xmin = int(xyxy[0])
                     det_ymin = int(xyxy[1])
                     det_xmax = int(xyxy[2])
@@ -190,6 +178,7 @@ def main():
                     det_crop = img0[det_ymin:det_ymax, det_xmin:det_xmax, :]
                     det_crop = cv2.resize(src=det_crop, dsize=(face_landmark_input_size, face_landmark_input_size),
                                           interpolation=cv2.INTER_AREA)
+                    cv2.rectangle(img0, (det_xmin, det_ymin), (det_xmax, det_ymax), (0, 0, 255), 1)
 
                     inputs = preprocess(det_crop).to(device)
                     inputs = inputs.unsqueeze(0)
@@ -211,19 +200,22 @@ def main():
                     eye_x = (lms_pred_merge[36 * 2:48 * 2:2] * det_width).astype(np.int32) + det_xmin
                     eye_y = (lms_pred_merge[(36 * 2) + 1:(48 * 2) + 1:2] * det_height).astype(np.int32) + det_ymin
 
-                    left_eye_H_dist = distance.euclidean((eye_x[0], eye_y[0]), (eye_x[3], eye_y[3]))
-                    left_eye_V_dist = min(distance.euclidean((eye_x[1], eye_y[1]), (eye_x[5], eye_y[5])),
-                                          distance.euclidean((eye_x[2], eye_y[2]), (eye_x[4], eye_y[4])))
+                    left_eye_horizontal_dist = distance.euclidean((eye_x[0], eye_y[0]), (eye_x[3], eye_y[3]))
+                    left_eye_vertical_dist = min(distance.euclidean((eye_x[1], eye_y[1]), (eye_x[5], eye_y[5])),
+                                                 distance.euclidean((eye_x[2], eye_y[2]), (eye_x[4], eye_y[4])))
 
-                    right_eye_H_dist = distance.euclidean((eye_x[6], eye_y[6]), (eye_x[9], eye_y[9]))
-                    right_eye_V_dist = min(distance.euclidean((eye_x[11], eye_y[11]), (eye_x[7], eye_y[7])),
-                                           distance.euclidean((eye_x[10], eye_y[10]), (eye_x[8], eye_y[8])))
+                    right_eye_horizontal_dist = distance.euclidean((eye_x[6], eye_y[6]), (eye_x[9], eye_y[9]))
+                    right_eye_vertical_dist = min(distance.euclidean((eye_x[11], eye_y[11]), (eye_x[7], eye_y[7])),
+                                                  distance.euclidean((eye_x[10], eye_y[10]), (eye_x[8], eye_y[8])))
 
-                    left_eye_ratio = left_eye_V_dist / left_eye_H_dist
-                    right_eye_ratio = right_eye_V_dist / right_eye_H_dist
+                    left_eye_ratio = left_eye_vertical_dist / left_eye_horizontal_dist
+                    right_eye_ratio = right_eye_vertical_dist / right_eye_horizontal_dist
 
                     left_eye_color = (0, 255, 0) if left_eye_ratio >= eye_det else (0, 0, 255)
                     right_eye_color = (0, 255, 0) if right_eye_ratio >= eye_det else (0, 0, 255)
+
+                    if left_eye_ratio < eye_det and right_eye_ratio < eye_det:
+                        det_frame += 1
 
                     for i in range(len(eye_x)):
                         if i <= 5:
@@ -236,6 +228,7 @@ def main():
             cv2.putText(img0, f'Elapsed Time(sec): {elapsed_time: .2f}', (5, 20), font, 0.5, [0, 0, 255], 1)
             cv2.putText(img0, f'Process Speed(FPS): {fps: .2f}', (5, 40), font, 0.5, [0, 0, 255], 1)
             cv2.putText(img0, f'Frame: {ref_frame}', (5, 60), font, 0.5, [0, 0, 255], 1)
+            cv2.putText(img0, f'Det Frame: {det_frame}', (5, 80), font, 0.5, [0, 0, 255], 1)
 
             # Stream results
             cv2.imshow("video", img0)
