@@ -10,10 +10,9 @@ from models.experimental import attempt_load
 from utils.augmentations import letterbox
 from utils.general import check_img_size, non_max_suppression, scale_coords 
 from utils.plots import Annotator, colors
-from utils.torch_utils import select_device 
 from utils.accessory_lib import system_info
-from PIPNet.lib.networks import Pip_resnet101
-from PIPNet.lib.functions import forward_pip, get_meanface
+from PIPNet.networks import Pip_resnet101
+from PIPNet.functions import forward_pip, get_meanface
 from scipy.spatial import distance
 
 
@@ -38,35 +37,23 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--fp16", type=int, default=0)
 args = parser.parse_args()
 
+source = os.path.join('D:\\', 'video', 'night_driver_1.mp4')
+
 net_stride = 32
 num_nb = 10
 data_name = 'data_300W'
 experiment_name = 'pip_32_16_60_r101_l2_l1_10_1_nb10'
 num_lms = 68
-input_size = 256
+face_landmark_input_size = 256
 det_box_scale = 1.2
 eye_det = 0.15
 
-transformations = transforms.Compose([transforms.Resize(448), transforms.ToTensor(),
-                                      transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-
-meanface_indices, reverse_index1, reverse_index2, max_len = get_meanface(os.path.join('PIPNet/data', data_name,
-                                                                                      'meanface.txt'), num_nb)
-
-resnet101 = models.resnet101(weights='ResNet101_Weights.DEFAULT')
-landmark_net = Pip_resnet101(resnet101, num_nb=num_nb, num_lms=num_lms, input_size=input_size, net_stride=net_stride)
-
-device = torch.device("cuda")
-
-landmark_net = landmark_net.to(device)
-save_dir = os.path.join('PIPNet/snapshots', data_name, experiment_name)
-weight_file = os.path.join(save_dir, 'epoch%d.pth' % (60 - 1))
-state_dict = torch.load(weight_file, map_location=device)
-landmark_net.load_state_dict(state_dict)
-landmark_net.eval()
-
-normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-preprocess = transforms.Compose([transforms.Resize((input_size, input_size)), transforms.ToTensor(), normalize])
+img_size = 640
+CONF_THRES = 0.4
+IOU_THRES = 0.45
+half = args.fp16
+cudnn.benchmark = True
+torch.backends.cuda.matmul.allow_tf32 = False
 
 elapsed_time: float = 0.0
 fps: float = 0.0
@@ -74,58 +61,73 @@ ref_frame: int = 0
 prev_time = time.time()
 start_time = time.time()
 
+device = torch.device("cuda")
+
+# transformations = transforms.Compose([transforms.Resize(448), transforms.ToTensor(),
+#                                       transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+
+meanface_indices, reverse_index1, reverse_index2, max_len = get_meanface(os.path.join('PIPNet', 'data', data_name,
+                                                                                      'meanface.txt'), num_nb)
+
+resnet101 = models.resnet101(weights='ResNet101_Weights.DEFAULT')
+face_landmark_net = Pip_resnet101(resnet101, num_nb=num_nb, num_lms=num_lms, input_size=face_landmark_input_size,
+                                  net_stride=net_stride)
+face_landmark_net = face_landmark_net.to(device)
+
+face_landmark_weight_file_path = os.path.join('PIPNet', 'snapshots', data_name, experiment_name, f'epoch{60-1}.pth')
+face_landmark_net.load_state_dict(torch.load(f=face_landmark_weight_file_path, map_location=device))
+face_landmark_net.eval()
+
+face_landmark_normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+preprocess = transforms.Compose([transforms.ToPILImage(),
+                                 transforms.Resize((face_landmark_input_size, face_landmark_input_size)),
+                                 transforms.ToTensor(), face_landmark_normalize])
+
+face_detector_weight_file_path = os.path.join('.', 'weights', 'face_detection_yolov5s.pt')
+face_det_normalize_tensor = torch.tensor(255.0).to(device)
+
+system_info()
+
+# Initialize
+print(f'[1/3] Device Initialized {time.time() - prev_time:.2f}sec')
+prev_time = time.time()
+
+# Load model
+model = attempt_load(face_detector_weight_file_path, device)  # load FP32 model
+model.eval()
+stride = int(model.stride.max())  # model stride
+img_size_chk = check_img_size(img_size, s=stride)  # check img_size
+
+if half:
+    model.half()  # to FP16
+
+# Get names and colors
+names = model.module.names if hasattr(model, 'module') else model.names
+
+# Run inference
+model(torch.zeros(1, 3, img_size_chk, img_size_chk).to(device).type_as(next(model.parameters())))  # run once
+print(f'[2/3] Yolov5 Detector Model Loaded {time.time() - prev_time:.2f}sec')
+prev_time = time.time()
+
+# Load image
+video = cv2.VideoCapture(source)
+frame_width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
+frame_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+font = cv2.FONT_HERSHEY_COMPLEX
+print(f'[3/3] Video Resource Loaded {time.time() - prev_time:.2f}sec')
+start_time = time.time()
+
+# logging file threading start
+logging_header = pd.DataFrame(columns=['absolute_data', 'absolute_time', 'time(sec)', 'frame', 'throughput(fps)'])
+logging_task = LoggingFile(logging_header, file_name='logging_data')
+logging_task.start_logging(period=0.1)
+
+cv2.namedWindow(winname='video', flags=cv2.WINDOW_NORMAL)
+
 
 @torch.no_grad()
 def main():
-    global elapsed_time, fps, ref_frame, prev_time, start_time
-    system_info()
-
-    source = "D:\\video\\night_driver_1.mp4"
-    weights = "./weights/face_detection_yolov5s.pt"
-    img_size = 640
-    CONF_THRES = 0.4
-    IOU_THRES = 0.45
-    half = args.fp16
-    cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = False
-
-    # Initialize
-    device = select_device('')
-    print(f'[1/3] Device Initialized {time.time()-prev_time:.2f}sec')
-    prev_time = time.time()
-    
-    # Load model
-    model = attempt_load(weights, device)  # load FP32 model
-    model.eval()
-    stride = int(model.stride.max())  # model stride
-    img_size_chk = check_img_size(img_size, s=stride)  # check img_size
-
-    if half:
-        model.half()  # to FP16
-
-    # Get names and colors
-    names = model.module.names if hasattr(model, 'module') else model.names
-
-    # Run inference
-    model(torch.zeros(1, 3, img_size_chk, img_size_chk).to(device).type_as(next(model.parameters())))  # run once
-    print(f'[2/3] Yolov5 Detector Model Loaded {time.time()-prev_time:.2f}sec')
-    prev_time = time.time()
-
-    # Load image
-    video = cv2.VideoCapture(source)
-    frame_width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    font = cv2.FONT_HERSHEY_COMPLEX
-    print(f'[3/3] Video Resource Loaded {time.time()-prev_time:.2f}sec')
-    start_time = time.time()
-
-    # logging file threading start
-    logging_header = pd.DataFrame(columns=['absolute_data', 'absolute_time', 'time(sec)', 'frame', 'throughput(fps)'])
-    logging_task = LoggingFile(logging_header, file_name='logging_data')
-    logging_task.start_logging(period=0.1)
-
-    normalize_tensor = torch.tensor(255.0).to(device)
-    cv2.namedWindow(winname='video', flags=cv2.WINDOW_NORMAL)
+    global elapsed_time, fps, ref_frame, prev_time
 
     while video.isOpened():
         ret, img0 = video.read()
@@ -140,12 +142,10 @@ def main():
             img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
             img = np.ascontiguousarray(img)
 
-            img = torch.from_numpy(img).to(device)
+            img = torch.from_numpy(img)
             img = img.half() if half else img.float()  # uint8 to fp16/32
-            img = torch.divide(img, normalize_tensor)
-
-            if img.ndimension() == 3:
-                img = img.unsqueeze(0)
+            img = torch.divide(img.to(device), face_det_normalize_tensor)
+            img = img.unsqueeze(0)
 
             # Inference
             pred = model(img, augment=False)[0]
@@ -188,14 +188,15 @@ def main():
                     det_width = det_xmax - det_xmin + 1
                     det_height = det_ymax - det_ymin + 1
                     det_crop = img0[det_ymin:det_ymax, det_xmin:det_xmax, :]
-                    det_crop = cv2.resize(det_crop, (input_size, input_size))
+                    det_crop = cv2.resize(src=det_crop, dsize=(face_landmark_input_size, face_landmark_input_size),
+                                          interpolation=cv2.INTER_AREA)
 
-                    inputs = Image.fromarray(det_crop[:, :, ::-1].astype('uint8'), 'RGB')
-                    inputs = preprocess(inputs).unsqueeze(0)
-                    inputs = inputs.to(device)
-                    lms_pred_x, lms_pred_y, lms_pred_nb_x, lms_pred_nb_y, outputs_cls, max_cls = forward_pip(landmark_net,
+                    inputs = preprocess(det_crop).to(device)
+                    inputs = inputs.unsqueeze(0)
+                    lms_pred_x, lms_pred_y, lms_pred_nb_x, lms_pred_nb_y, outputs_cls, max_cls = forward_pip(face_landmark_net,
                                                                                                              inputs, preprocess,
-                                                                                                             input_size, net_stride, num_nb)
+                                                                                                             face_landmark_input_size,
+                                                                                                             net_stride, num_nb)
 
                     lms_pred = torch.cat((lms_pred_x, lms_pred_y), dim=1).flatten()
                     tmp_nb_x = lms_pred_nb_x[reverse_index1, reverse_index2].view(num_lms, max_len)

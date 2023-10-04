@@ -125,3 +125,6 @@ dmypy.json
 
 # pycharm environment
 .idea
+
+# pip network weights
+/PIPNet/snapshots/
