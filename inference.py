@@ -35,7 +35,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--fp16", type=int, default=0)
 args = parser.parse_args()
 
-source = os.path.join('D:\\', 'video', 'night_driver_1.mp4')
+source = os.path.join(os.path.sep, 'home', 'nvidia', 'Videos', 'night_driver_1.mp4')
 
 net_stride = 32
 num_nb = 10
@@ -105,10 +105,15 @@ model(torch.zeros(1, 3, img_size_chk, img_size_chk).to(device).type_as(next(mode
 print(f'[2/3] Yolov5 Detector Model Loaded {time.time() - prev_time:.2f}sec')
 prev_time = time.time()
 
-# Load image
-video = cv2.VideoCapture(source)
+# Load video resource
+video = cv2.VideoCapture(0, cv2.CAP_V4L)
+video.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+video.set(cv2.CAP_PROP_FRAME_WIDTH, value=1280)
+video.set(cv2.CAP_PROP_FRAME_HEIGHT, value=720)
+
 frame_width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
 font = cv2.FONT_HERSHEY_COMPLEX
 print(f'[3/3] Video Resource Loaded {time.time() - prev_time:.2f}sec')
 start_time = time.time()
