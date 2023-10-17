@@ -5,7 +5,7 @@ import pandas as pd
 import torchvision.models as models
 import torchvision.transforms as transforms
 
-from models.experimental import attempt_load
+from models.common import DetectMultiBackend
 from utils.augmentations import letterbox
 from utils.general import check_img_size, non_max_suppression, scale_coords 
 from utils.accessory_lib import system_info
@@ -60,7 +60,7 @@ det_frame: int = 0
 prev_time = time.time()
 start_time = time.time()
 
-device = torch.device("cuda")
+device = torch.device("cuda:0")
 
 meanface_indices, reverse_index1, reverse_index2, max_len = get_meanface(os.path.join('PIPNet', 'data', data_name,
                                                                                       'meanface.txt'), num_nb)
@@ -79,7 +79,7 @@ preprocess = transforms.Compose([transforms.ToPILImage(),
                                  transforms.Resize((face_landmark_input_size, face_landmark_input_size)),
                                  transforms.ToTensor(), face_landmark_normalize])
 
-face_detector_weight_file_path = os.path.join('.', 'weights', 'face_detection_yolov5s.pt')
+face_detector_weight_file_path = os.path.join('.', 'weights', 'face_detection_yolov5s.torchscript')
 face_det_normalize_tensor = torch.tensor(255.0).to(device)
 
 system_info()
@@ -89,24 +89,20 @@ print(f'[1/3] Device Initialized {time.time() - prev_time:.2f}sec')
 prev_time = time.time()
 
 # Load model
-model = attempt_load(face_detector_weight_file_path, device)  # load FP32 model
-model.eval()
-stride = int(model.stride.max())  # model stride
-img_size_chk = check_img_size(img_size, s=stride)  # check img_size
-
-if half:
-    model.half()  # to FP16
+face_detector_net = DetectMultiBackend(face_detector_weight_file_path, device=device, fp16=half)
+face_detector_net.eval()
 
 # Get names and colors
-names = model.module.names if hasattr(model, 'module') else model.names
+stride, names = face_detector_net.stride, face_detector_net.names
+img_size_chk = check_img_size(img_size, s=stride)  # check img_size
 
 # Run inference
-model(torch.zeros(1, 3, img_size_chk, img_size_chk).to(device).type_as(next(model.parameters())))  # run once
+face_detector_net.warmup(imgsz=(1, 3, img_size_chk, img_size_chk))  # warmup
 print(f'[2/3] Yolov5 Detector Model Loaded {time.time() - prev_time:.2f}sec')
 prev_time = time.time()
 
 # Load video resource
-video = cv2.VideoCapture(0, cv2.CAP_V4L)
+video = cv2.VideoCapture(0)
 video.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
 video.set(cv2.CAP_PROP_FRAME_WIDTH, value=1280)
 video.set(cv2.CAP_PROP_FRAME_HEIGHT, value=720)
@@ -137,7 +133,7 @@ def main():
             ref_frame += 1
 
             # Padded resize
-            img = letterbox(img0, img_size_chk, stride=stride)[0]
+            img = letterbox(img0, img_size_chk, stride=stride, auto=False)[0]
 
             # Convert
             img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
@@ -149,7 +145,7 @@ def main():
             img = img.unsqueeze(0)
 
             # Inference
-            pred = model(img, augment=False)[0]
+            pred = face_detector_net(img, augment=False)
 
             # Apply NMS
             detected_face = non_max_suppression(pred, CONF_THRES, IOU_THRES, classes=None, agnostic=False)[0]
