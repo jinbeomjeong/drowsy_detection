@@ -31,6 +31,11 @@ class LoggingFile:
         logging_thread.start() 
 
 
+@torch.jit.script
+def fused_divide(x: torch.Tensor, y: torch.Tensor):
+    return torch.div(x, y)
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--fp16", type=int, default=0)
 args = parser.parse_args()
@@ -65,13 +70,14 @@ device = torch.device("cuda:0")
 meanface_indices, reverse_index1, reverse_index2, max_len = get_meanface(os.path.join('PIPNet', 'data', data_name,
                                                                                       'meanface.txt'), num_nb)
 
+# load face landmark model
 resnet101 = models.resnet101(weights='ResNet101_Weights.DEFAULT')
 face_landmark_net = Pip_resnet101(resnet101, num_nb=num_nb, num_lms=num_lms, input_size=face_landmark_input_size,
                                   net_stride=net_stride)
 face_landmark_net = face_landmark_net.to(device)
-
 face_landmark_weight_file_path = os.path.join('PIPNet', 'snapshots', data_name, experiment_name, f'epoch{60-1}.pth')
 face_landmark_net.load_state_dict(torch.load(f=face_landmark_weight_file_path, map_location=device))
+face_landmark_net.zero_grad()
 face_landmark_net.eval()
 
 face_landmark_normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -90,22 +96,25 @@ prev_time = time.time()
 
 # Load model
 face_detector_net = DetectMultiBackend(face_detector_weight_file_path, device=device, fp16=half)
+face_detector_net.zero_grad()
 face_detector_net.eval()
 
 # Get names and colors
 stride, names = face_detector_net.stride, face_detector_net.names
 img_size_chk = check_img_size(img_size, s=stride)  # check img_size
 
+img = np.zeros([3, img_size_chk, img_size_chk], dtype=np.uint8)
+
 # Run inference
 face_detector_net.warmup(imgsz=(1, 3, img_size_chk, img_size_chk))  # warmup
-print(f'[2/3] Yolov5 Detector Model Loaded {time.time() - prev_time:.2f}sec')
+print(f'[2/3] Model Loaded {time.time() - prev_time:.2f}sec')
 prev_time = time.time()
 
 # Load video resource
-video = cv2.VideoCapture(0)
+video = cv2.VideoCapture(0, cv2.CAP_V4L)
 video.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-video.set(cv2.CAP_PROP_FRAME_WIDTH, value=1280)
-video.set(cv2.CAP_PROP_FRAME_HEIGHT, value=720)
+video.set(cv2.CAP_PROP_FRAME_WIDTH, value=1920)
+video.set(cv2.CAP_PROP_FRAME_HEIGHT, value=1080)
 
 frame_width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -124,7 +133,7 @@ cv2.namedWindow(winname='video', flags=cv2.WINDOW_NORMAL)
 
 @torch.no_grad()
 def main():
-    global elapsed_time, fps, ref_frame, det_frame, prev_time
+    global elapsed_time, fps, ref_frame, det_frame, prev_time, img
 
     while video.isOpened():
         ret, img0 = video.read()
@@ -139,9 +148,9 @@ def main():
             img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
             img = np.ascontiguousarray(img)
 
-            img = torch.from_numpy(img)
+            img = torch.tensor(img, device=device)
             img = img.half() if half else img.float()  # uint8 to fp16/32
-            img = torch.divide(img.to(device), face_det_normalize_tensor)
+            img = fused_divide(img.to(device), face_det_normalize_tensor)
             img = img.unsqueeze(0)
 
             # Inference
@@ -188,14 +197,14 @@ def main():
                                                                                                              face_landmark_input_size,
                                                                                                              net_stride, num_nb)
 
-                    lms_pred = torch.cat((lms_pred_x, lms_pred_y), dim=1).flatten()
+                    # lms_pred = torch.cat((lms_pred_x, lms_pred_y), dim=1).flatten()
                     tmp_nb_x = lms_pred_nb_x[reverse_index1, reverse_index2].view(num_lms, max_len)
                     tmp_nb_y = lms_pred_nb_y[reverse_index1, reverse_index2].view(num_lms, max_len)
                     tmp_x = torch.mean(torch.cat((lms_pred_x, tmp_nb_x), dim=1), dim=1).view(-1, 1)
                     tmp_y = torch.mean(torch.cat((lms_pred_y, tmp_nb_y), dim=1), dim=1).view(-1, 1)
 
                     lms_pred_merge = torch.cat((tmp_x, tmp_y), dim=1).flatten()
-                    lms_pred = lms_pred.cpu().numpy()
+                    # lms_pred = lms_pred.cpu().numpy()
                     lms_pred_merge = lms_pred_merge.cpu().numpy()
 
                     eye_x = (lms_pred_merge[36 * 2:48 * 2:2] * det_width).astype(np.int32) + det_xmin
