@@ -1,13 +1,13 @@
 import time, cv2, torch, threading, argparse, os
 import torch.backends.cudnn as cudnn
-import numpy as np 
+import numpy as np
 import pandas as pd
 import torchvision.models as models
 import torchvision.transforms as transforms
 
 from models.experimental import attempt_load
 from utils.augmentations import letterbox
-from utils.general import check_img_size, non_max_suppression, scale_coords 
+from utils.general import check_img_size, non_max_suppression, scale_coords
 from utils.accessory_lib import system_info
 from PIPNet.networks import Pip_resnet101
 from PIPNet.functions import forward_pip, get_meanface
@@ -21,14 +21,14 @@ class LoggingFile:
         self.logging_file_path = './logging_data/' + self.logging_file_name + '.csv'
         logging_header.to_csv(self.logging_file_path, mode='a', header=True)
 
-    def start_logging(self, period=0.1): 
+    def start_logging(self, period=0.1):
         logging_data = pd.DataFrame({'1': time.strftime('%Y/%m/%d', time.localtime(time.time())),
                                      '2': time.strftime('%H:%M:%S', time.localtime(time.time())),
                                      '3': round(elapsed_time, 2), '4': ref_frame, '5': round(fps, 2)}, index=[0])
-        logging_data.to_csv(self.logging_file_path, mode='a', header=False) 
-        logging_thread = threading.Timer(period, self.start_logging, (period, )) 
-        logging_thread.daemon = True 
-        logging_thread.start() 
+        logging_data.to_csv(self.logging_file_path, mode='a', header=False)
+        logging_thread = threading.Timer(period, self.start_logging, (period, ))
+        logging_thread.daemon = True
+        logging_thread.start()
 
 
 parser = argparse.ArgumentParser()
@@ -44,7 +44,7 @@ experiment_name = 'pip_32_16_60_r101_l2_l1_10_1_nb10'
 num_lms = 68
 face_landmark_input_size = 240
 det_box_scale = 1.2
-eye_det = 0.12
+eye_det = 0.20
 
 img_size = 640
 CONF_THRES = 0.4
@@ -59,6 +59,12 @@ ref_frame: int = 0
 det_frame: int = 0
 prev_time = time.time()
 start_time = time.time()
+t0 = time.time()
+
+left_eye_det_prv = False
+right_eye_det_prv = False
+left_eye_det_result = False
+right_eye_det_result = False
 
 device = torch.device("cuda")
 
@@ -128,16 +134,15 @@ cv2.namedWindow(winname='video', flags=cv2.WINDOW_NORMAL)
 
 @torch.no_grad()
 def main():
-    global elapsed_time, fps, ref_frame, det_frame, prev_time
+    global elapsed_time, fps, ref_frame, det_frame, t0, left_eye_det_prv, right_eye_det_prv, \
+        left_eye_det_result, right_eye_det_result
 
     while video.isOpened():
+        elapsed_time = time.time() - start_time
         ret, img0 = video.read()
 
         if ret:
-            ref_frame += 1
-
-            # Padded resize
-            img = letterbox(img0, img_size_chk, stride=stride)[0]
+            img = letterbox(img0, img_size_chk, stride=stride)[0]  # Padded resize
 
             # Convert
             img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
@@ -192,14 +197,14 @@ def main():
                                                                                                              face_landmark_input_size,
                                                                                                              net_stride, num_nb)
 
-                    lms_pred = torch.cat((lms_pred_x, lms_pred_y), dim=1).flatten()
+                    # lms_pred = torch.cat((lms_pred_x, lms_pred_y), dim=1).flatten()
                     tmp_nb_x = lms_pred_nb_x[reverse_index1, reverse_index2].view(num_lms, max_len)
                     tmp_nb_y = lms_pred_nb_y[reverse_index1, reverse_index2].view(num_lms, max_len)
                     tmp_x = torch.mean(torch.cat((lms_pred_x, tmp_nb_x), dim=1), dim=1).view(-1, 1)
                     tmp_y = torch.mean(torch.cat((lms_pred_y, tmp_nb_y), dim=1), dim=1).view(-1, 1)
 
                     lms_pred_merge = torch.cat((tmp_x, tmp_y), dim=1).flatten()
-                    lms_pred = lms_pred.cpu().numpy()
+                    # lms_pred = lms_pred.cpu().numpy()
                     lms_pred_merge = lms_pred_merge.cpu().numpy()
 
                     eye_x = (lms_pred_merge[36 * 2:48 * 2:2] * det_width).astype(np.int32) + det_xmin
@@ -216,10 +221,16 @@ def main():
                     left_eye_ratio = left_eye_vertical_dist / left_eye_horizontal_dist
                     right_eye_ratio = right_eye_vertical_dist / right_eye_horizontal_dist
 
-                    left_eye_color = (0, 255, 0) if left_eye_ratio >= eye_det else (0, 0, 255)
-                    right_eye_color = (0, 255, 0) if right_eye_ratio >= eye_det else (0, 0, 255)
+                    left_eye_det_result = left_eye_det_prv or (left_eye_ratio < eye_det)
+                    right_eye_det_result = right_eye_det_prv or (right_eye_ratio < eye_det)
 
-                    if left_eye_ratio < eye_det and right_eye_ratio < eye_det:
+                    left_eye_det_prv = left_eye_ratio < eye_det
+                    right_eye_det_prv = right_eye_ratio < eye_det
+
+                    left_eye_color = (0, 0, 255) if left_eye_det_result else (0, 255, 0)
+                    right_eye_color = (0, 0, 255) if right_eye_det_result else (0, 255, 0)
+
+                    if left_eye_det_result and right_eye_det_result:
                         det_frame += 1
 
                     for i in range(len(eye_x)):
@@ -228,8 +239,9 @@ def main():
                         else:
                             cv2.circle(img0, (eye_x[i], eye_y[i]), 1, right_eye_color, 1)
 
-            fps = 1/(time.time() - prev_time)
-            prev_time = time.time()
+            fps = 1/(time.time() - t0)
+            t0 = time.time()
+
             cv2.putText(img0, f'Elapsed Time(sec): {elapsed_time: .2f}', (5, 20), font, 0.5, [0, 0, 255], 1)
             cv2.putText(img0, f'Process Speed(FPS): {fps: .2f}', (5, 40), font, 0.5, [0, 0, 255], 1)
             cv2.putText(img0, f'Frame: {ref_frame}', (5, 60), font, 0.5, [0, 0, 255], 1)
@@ -237,7 +249,7 @@ def main():
 
             # Stream results
             cv2.imshow("video", img0)
-            elapsed_time = time.time()-start_time
+            ref_frame += 1
 
         else:
             break
