@@ -1,4 +1,4 @@
-import time, cv2, torch, threading, argparse, os
+import time, cv2, torch, threading, argparse, os, can
 import torch.backends.cudnn as cudnn
 import numpy as np
 import pandas as pd
@@ -12,7 +12,12 @@ from utils.accessory_lib import system_info
 from PIPNet.networks import Pip_resnet101
 from PIPNet.functions import forward_pip, get_meanface
 from scipy.spatial import distance
+from utils.system_communication import AdasCANCommunication, ClusterCANCommunication
 
+vehicle_can_ch = can.interface.Bus(bustype='pcan', channel='PCAN_USBBUS1', bitrate=500000)
+
+adas_can_parser = AdasCANCommunication(dbc_filename='resource/ADAS_can_protocol.dbc')
+clu_can_parser = ClusterCANCommunication(dbc_filename='resource/Evits_EV_CAN_DBC_CLU_DSM.dbc')
 
 class LoggingFile:
     def __init__(self, logging_header=pd.DataFrame(), file_name='logging_data'):
@@ -65,6 +70,8 @@ left_eye_det_prv = False
 right_eye_det_prv = False
 left_eye_det_result = False
 right_eye_det_result = False
+drowsy_det = False
+msg_list = []
 
 device = torch.device("cuda")
 
@@ -135,7 +142,7 @@ cv2.namedWindow(winname='video', flags=cv2.WINDOW_NORMAL)
 @torch.no_grad()
 def main():
     global elapsed_time, fps, ref_frame, det_frame, t0, left_eye_det_prv, right_eye_det_prv, \
-        left_eye_det_result, right_eye_det_result
+        left_eye_det_result, right_eye_det_result, drowsy_det
 
     while video.isOpened():
         elapsed_time = time.time() - start_time
@@ -230,7 +237,9 @@ def main():
                     left_eye_color = (0, 0, 255) if left_eye_det_result else (0, 255, 0)
                     right_eye_color = (0, 0, 255) if right_eye_det_result else (0, 255, 0)
 
-                    if left_eye_det_result and right_eye_det_result:
+                    drowsy_det = left_eye_det_result and right_eye_det_result
+
+                    if drowsy_det:
                         det_frame += 1
 
                     for i in range(len(eye_x)):
@@ -256,6 +265,15 @@ def main():
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
+
+        msg_list.append(adas_can_parser.create_dsm_can_msg(dsm_state=int(drowsy_det)+1))
+        msg_list.append(clu_can_parser.create_dsm_can_msg(dsm_state=int(drowsy_det)))
+
+        for msg in msg_list:
+            vehicle_can_ch.send(msg)
+            vehicle_can_ch.flush_tx_buffer()
+
+        msg_list.clear()
 
     video.release()
     cv2.destroyAllWindows()
