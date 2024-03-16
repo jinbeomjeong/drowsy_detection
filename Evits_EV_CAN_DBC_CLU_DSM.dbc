@@ -92,7 +92,7 @@ BO_ 674 CLU_VCU_2A2: 8 Vector__XXX
  SG_ Chcrging_End_Time_hh : 40|8@1+ (1,0) [0|255] "" Vector__XXX
  SG_ Chcrging_End_Time_mm : 48|8@1+ (1,0) [0|255] "" Vector__XXX
 
-BO_ 673 CLU_VCU_2A1: 8 Vector__XXX
+BO_ 676 CLU_VCU_2A1: 8 Vector__XXX
  SG_ dsm : 60|2@1+ (1,0) [0|1] "" Vector__XXX
 
 BO_ 688 CLU_2B0: 8 Vector__XXX
@@ -114,7 +114,7 @@ BA_DEF_DEF_  "GenSigStartValue" 0;
 BA_ "BusType" "CAN";
 BA_ "GenMsgCycleTime" BO_ 672 100;
 BA_ "GenMsgCycleTime" BO_ 674 100;
-BA_ "GenMsgCycleTime" BO_ 673 100;
+BA_ "GenMsgCycleTime" BO_ 676 100;
 BA_ "GenMsgCycleTime" BO_ 688 100;
 BA_ "GenSigStartValue" SG_ 672 Vehicle_Power_Flow 100;
 VAL_ 3221225472 LaneDepature 0 "OFF" 1 "Warning Left" 2 "Warning Right" 3 "Normal" ;
@@ -136,5 +136,5 @@ VAL_ 674 ESC_VDC_Switch_Lamp 0 "Off" 1 "On" ;
 VAL_ 674 ABS_Defective 0 "not Defective" 1 "Defective" ;
 VAL_ 674 ABS_Warning_Lamp 0 "Off" 1 "On" ;
 VAL_ 674 ABS_Buzzer_Sound 0 "3 time" 1 "4 time" 2 "5 time" ;
-VAL_ 673 dsm 0 "OFF" 1 "ON" ;
+VAL_ 676 dsm 0 "OFF" 1 "ON" ;
 

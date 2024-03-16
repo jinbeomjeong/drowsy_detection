@@ -16,8 +16,9 @@ from utils.system_communication import AdasCANCommunication, ClusterCANCommunica
 
 vehicle_can_ch = can.interface.Bus(bustype='pcan', channel='PCAN_USBBUS1', bitrate=500000)
 
-adas_can_parser = AdasCANCommunication(dbc_filename='resource/ADAS_can_protocol.dbc')
-clu_can_parser = ClusterCANCommunication(dbc_filename='resource/Evits_EV_CAN_DBC_CLU_DSM.dbc')
+adas_can_parser = AdasCANCommunication(dbc_filename='ADAS_can_protocol.dbc')
+clu_can_parser = ClusterCANCommunication(dbc_filename='Evits_EV_CAN_DBC_CLU_DSM.dbc')
+
 
 class LoggingFile:
     def __init__(self, logging_header=pd.DataFrame(), file_name='logging_data'):
@@ -49,7 +50,7 @@ experiment_name = 'pip_32_16_60_r101_l2_l1_10_1_nb10'
 num_lms = 68
 face_landmark_input_size = 240
 det_box_scale = 1.2
-eye_det = 0.20
+eye_det = 0.12
 
 img_size = 640
 CONF_THRES = 0.4
@@ -70,6 +71,8 @@ left_eye_det_prv = False
 right_eye_det_prv = False
 left_eye_det_result = False
 right_eye_det_result = False
+left_eye_ratio: float = 0.0
+right_eye_ratio: float = 0.0
 drowsy_det = False
 msg_list = []
 
@@ -119,8 +122,8 @@ print(f'[2/3] Yolov5 Detector Model Loaded {time.time() - prev_time:.2f}sec')
 prev_time = time.time()
 
 # Load video resource
-video = cv2.VideoCapture(0, cv2.CAP_V4L)
-video.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+video = cv2.VideoCapture(1)
+#video.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
 video.set(cv2.CAP_PROP_FRAME_WIDTH, value=1280)
 video.set(cv2.CAP_PROP_FRAME_HEIGHT, value=720)
 
@@ -142,7 +145,7 @@ cv2.namedWindow(winname='video', flags=cv2.WINDOW_NORMAL)
 @torch.no_grad()
 def main():
     global elapsed_time, fps, ref_frame, det_frame, t0, left_eye_det_prv, right_eye_det_prv, \
-        left_eye_det_result, right_eye_det_result, drowsy_det
+        left_eye_det_result, right_eye_det_result, drowsy_det, left_eye_ratio, right_eye_ratio
 
     while video.isOpened():
         elapsed_time = time.time() - start_time
@@ -228,8 +231,8 @@ def main():
                     left_eye_ratio = left_eye_vertical_dist / left_eye_horizontal_dist
                     right_eye_ratio = right_eye_vertical_dist / right_eye_horizontal_dist
 
-                    left_eye_det_result = left_eye_det_prv or (left_eye_ratio < eye_det)
-                    right_eye_det_result = right_eye_det_prv or (right_eye_ratio < eye_det)
+                    left_eye_det_result = left_eye_det_prv or (0.01 < left_eye_ratio < eye_det)
+                    right_eye_det_result = right_eye_det_prv or (0.01 < right_eye_ratio < eye_det)
 
                     left_eye_det_prv = left_eye_ratio < eye_det
                     right_eye_det_prv = right_eye_ratio < eye_det
@@ -271,7 +274,6 @@ def main():
 
         for msg in msg_list:
             vehicle_can_ch.send(msg)
-            vehicle_can_ch.flush_tx_buffer()
 
         msg_list.clear()
 
