@@ -47,7 +47,7 @@ class EyeDataset(Dataset):
         else:
             self.__eye_img = Image.fromarray(self.__eye_img)
 
-        return self.__eye_img, self.__dataset_desc.loc[idx, 'left_eye_opened']
+        return self.__eye_img, int(self.__dataset_desc.loc[idx, 'left_eye_opened'])
 
 
 class EyeDataModule(pl.LightningDataModule):
@@ -89,14 +89,17 @@ class Model(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         img, label = batch
+        label = label
         pred = self.forward(img)
         loss = self.__criterion(pred, label)
         self.log('train_loss', loss)
+        #print(f"Epoch: {self.current_epoch}, Step: {batch_idx}, Loss: {loss.item()}")
 
         return loss
 
     def validation_step(self, batch, batch_idx):
         img, label = batch
+        label = label
         pred = self.forward(img)
         loss = self.__criterion(pred, label)
         self.log('val_loss', loss)
@@ -107,6 +110,7 @@ class Model(pl.LightningModule):
         optimizer = torch.optim.Adam(self.__model.parameters(), lr=0.001)
 
         return optimizer
+
 
 class MyProgressBar(TQDMProgressBar):
     def init_validation_tqdm(self):
@@ -136,11 +140,11 @@ if __name__ == '__main__':
 
     drowsy_det_model = Model()
     data = EyeDataModule(train_dataset_desc=test_eye_shape_dataset, val_dataset_desc=val_eye_shape_dataset,
-                         batch_size=256, n_workers=24)
+                         batch_size=8, n_workers=4)
 
     early_stop_callback = EarlyStopping(monitor='train_loss', mode='min', verbose=True, min_delta=0.001, patience=200)
     trainer = pl.Trainer(accelerator='gpu', devices='auto', max_epochs=10, enable_progress_bar=True,
-                         enable_model_summary=True, callbacks=[early_stop_callback, MyProgressBar()])
+                         enable_model_summary=True, callbacks=[early_stop_callback])
 
     trainer.fit(model=drowsy_det_model, datamodule=data)
 
