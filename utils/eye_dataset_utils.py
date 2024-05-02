@@ -1,4 +1,4 @@
-import cv2, torch, sys
+import cv2, torch, sys, torchmetrics
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
@@ -6,7 +6,6 @@ from pytorch_lightning.callbacks import TQDMProgressBar
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms, models
 from PIL import Image
-import torchmetrics
 
 
 class EyeDataset(Dataset):
@@ -56,7 +55,7 @@ class EyeDataModule(pl.LightningDataModule):
         self.__val_dataset_desc = val_dataset_desc
         self.batch_size = batch_size
         self.num_workers = n_workers
-        self.__transform = transforms.Compose([transforms.Resize((64, 64)),
+        self.__transform = transforms.Compose([transforms.Resize((224, 224)),
                                                transforms.ToTensor(),
                                                transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                                                     std=[0.229, 0.224, 0.225])])
@@ -77,9 +76,11 @@ class EyeDataModule(pl.LightningDataModule):
 class EyeDetModel(pl.LightningModule):
     def __init__(self):
         super().__init__()
-        self.__model = models.resnet18(weights=None)
-        self.__model.conv1 = torch.nn.Conv2d(3, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-        self.__model.fc = torch.nn.Linear(in_features=self.__model.fc.in_features, out_features=2)
+        self.__model = models.mobilenet_v3_small(weights=None)
+        #self.__model.conv1 = torch.nn.Conv2d(3, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        #self.__model.fc = torch.nn.Linear(in_features=self.__model.fc.in_features, out_features=2)
+        self.__model.classifier[3] = torch.nn.Linear(self.__model.classifier[3].in_features, out_features=2)
+
         self.__criterion = torch.nn.CrossEntropyLoss()
         self.__accuracy_score = torchmetrics.Accuracy(task='binary')
         self.__precision_score = torchmetrics.Precision(task='binary')
@@ -95,7 +96,13 @@ class EyeDetModel(pl.LightningModule):
         pred = self.forward(img)
         loss = self.__criterion(pred, label)
 
+        pred_result = torch.argmax(pred, dim=1)
+
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log(name='train_accuracy', value=self.__accuracy_score(pred_result, label), on_step=True, on_epoch=True, prog_bar=True)
+        self.log(name='train_precision', value=self.__precision_score(pred_result, label), on_step=True, on_epoch=True, prog_bar=True)
+        self.log(name='train_recall', value=self.__recall_score(pred_result, label), on_step=True, on_epoch=True, prog_bar=True)
+        self.log(name='train_f1', value=self.__f1_score(pred_result, label), on_step=True, on_epoch=True, prog_bar=True)
 
         return loss
 
