@@ -46,7 +46,7 @@ class MrlEyeDataModule(pl.LightningDataModule):
                         sep_idx = file.find('_')
                         file = file[sep_idx + 1:]
 
-                    self.__eye_label_list.append(int(file[0]))
+                    self.__eye_label_list.append(1-int(file[0]))
 
     def setup(self, stage=None):
         self.__train_dataset = MrleyesDataset(img_path_list=self.__eye_img_files, label_list=self.__eye_label_list,
