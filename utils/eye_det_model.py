@@ -10,7 +10,7 @@ class EyeDetModel(pl.LightningModule):
         super().__init__()
         self.__learning_rate = learning_rate
         self.__model = mobilenet_v2(weights=None)
-        self.__model.classifier[1] = nn.Sequential(nn.Dropout(0.5),
+        self.__model.classifier[1] = nn.Sequential(#nn.Dropout(0.2),
                                                    nn.Linear(self.__model.classifier[1].in_features, out_features=2))
 
         self.__criterion = nn.CrossEntropyLoss(weight=torch.FloatTensor(class_weight), reduction='mean')
